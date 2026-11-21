@@ -651,7 +651,11 @@ export default function App() {
                   <span className="muted small"> · orange lines on the map, from HIFLD + OpenStreetMap (may be incomplete)</span></p>
               )}
               <button className="heat-btn" onClick={toggleHeat} disabled={!results || !grid}>
-                {showHeat ? 'Hide grid-profit heat map' : 'Show where selling to the grid is profitable'}
+                {showHeat ? 'Hide grid-profit heat map'
+                  : gridStatus === 'loading' ? 'Heat map: loading power lines…'
+                  : !results ? 'Heat map: waiting for the energy estimate…'
+                  : gridStatus === 'error' ? 'Heat map unavailable (no power-line data)'
+                  : 'Show where selling to the grid is profitable'}
               </button>
               <div className="modes">
                 {MODES.filter((m) => siteType === 'ground' || m.id !== 'lease').map((m) => (
