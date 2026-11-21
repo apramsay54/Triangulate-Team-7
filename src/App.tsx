@@ -48,7 +48,11 @@ type AiState = { status: 'idle' | 'loading' | 'off' | 'error'; msg?: string } | 
 type ProdVal = { annual: number; monthly: number[]; station: string | null };
 type Prod = { status: 'idle' | 'loading' } | ({ status: 'done' } & ProdVal) | { status: 'error'; msg: string };
 
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
+const OVERPASS = [
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+];
 const MODES: { id: Mode; title: string; blurb: string }[] = [
   { id: 'grid', title: 'Sell to the grid', blurb: 'Connect to the nearest power line and sell every kWh to the utility.' },
   { id: 'onsite', title: 'Use it on site', blurb: 'Power your own buildings; surplus is credited at the export rate.' },
@@ -247,7 +251,7 @@ export default function App() {
       const q = `[out:json][timeout:25];(way["power"~"^(line|minor_line)$"](around:6000,${c[0]},${c[1]});node["power"="substation"](around:20000,${c[0]},${c[1]});way["power"="substation"](around:20000,${c[0]},${c[1]}););out geom qt 600;`;
       for (const ep of OVERPASS) {
         try {
-          const r = await fetch(ep, { method: 'POST', body: new URLSearchParams({ data: q }), signal: ctl.signal });
+          const r = await fetch(ep, { method: 'POST', body: new URLSearchParams({ data: q }), signal: AbortSignal.any([ctl.signal, AbortSignal.timeout(9000)]) });
           if (!r.ok) continue;
           const j = await r.json();
           type El = { type: string; tags?: Record<string, string>; lat?: number; lon?: number; geometry?: { lat: number; lon: number }[] };
@@ -290,8 +294,9 @@ export default function App() {
           });
           setGridStatus('idle');
           return;
-        } catch (e) {
-          if ((e as Error).name === 'AbortError') return;
+        } catch {
+          if (ctl.signal.aborted) return; // plot changed; a newer lookup is running
+          // otherwise this server timed out or failed: try the next one
         }
       }
       setGridStatus('error');
