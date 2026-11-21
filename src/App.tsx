@@ -87,7 +87,7 @@ export default function App() {
   const [points, setPoints] = useState<LatLng[]>([]);
   const [drawing, setDrawing] = useState(false);
   const [siteType, setSiteType] = useState<SiteType>('ground');
-  const [coverage, setCoverage] = useState(100);
+  const [coverage, setCoverage] = useState(85); // leaves room for access lanes, inverters and fencing
   const [tilt, setTilt] = useState(SITE_DEFAULTS.ground.tilt);
   const [gcr, setGcr] = useState(SITE_DEFAULTS.ground.gcr);
   const [setback, setSetback] = useState(SITE_DEFAULTS.ground.setback);
@@ -214,7 +214,8 @@ export default function App() {
         const r = await fetch(`/api/pvwatts?lat=${center[0]}&lon=${center[1]}&kw=${kw.toFixed(2)}&tilt=${tilt}&array=${arrayType}`);
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-        const v = { annual: j.acAnnual, monthly: j.acMonthly, station: j.station };
+        const station = typeof j.station === 'string' && /[a-z]/i.test(j.station) ? j.station : null;
+        const v = { annual: j.acAnnual, monthly: j.acMonthly, station };
         prodCache.current.set(key, v);
         setProd({ status: 'done', ...v });
       } catch (e) {
@@ -421,7 +422,7 @@ export default function App() {
               </div>
               {!badShape && !layout.tooLarge && layout.maxPanels === 0 && <p className="warn">No full row of panels fits. Make the plot larger or reduce the edge setback.</p>}
               <label className="slider">
-                <span>Solar coverage: <b>{coverage}%</b> of the space that fits panels</span>
+                <span>Solar coverage: <b>{coverage}%</b> of the space that fits panels <em className="muted">(the rest is left for access lanes and equipment)</em></span>
                 <input type="range" min={0} max={100} value={coverage} onChange={(e) => setCoverage(Number(e.target.value))} />
               </label>
               <div className="grid3">
