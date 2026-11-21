@@ -2,8 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
-  type LatLng, areaM2, centroid, distToPolylineM, layoutPanels, selfIntersects, M2_PER_ACRE, M_PER_MILE,
+  type LatLng, areaM2, centroid, distToPolylineM, layoutPanels, selfIntersects, toLocal, toLatLng, M2_PER_ACRE, M_PER_MILE,
 } from './geo';
+
+const DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const DAYTIME_USE = 0.4; // share of a typical site's use that happens while panels are producing
+const BATTERY_EFF = 0.9; // round-trip efficiency for energy shifted through the battery
+const HEAT_HALF_M = 4000; // heat map covers 8 km x 8 km around the plot
+const HEAT_N = 32; // cells per side
 import { type Mode, type FinInputs, type FinResult, runFinance, compact, YEARS } from './finance';
 
 const START: LatLng = [35.7847, -78.6821]; // NC State campus
@@ -81,7 +87,10 @@ const fmtKv = (kv: string) => {
 export default function App() {
   const mapEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const layers = useRef<{ plot: L.LayerGroup; handles: L.LayerGroup; panels: L.LayerGroup; grid: L.LayerGroup; canvas: L.Canvas } | null>(null);
+  const layers = useRef<{ plot: L.LayerGroup; handles: L.LayerGroup; panels: L.LayerGroup; grid: L.LayerGroup; heat: L.LayerGroup; canvas: L.Canvas } | null>(null);
+  const gridGeo = useRef<{ c: LatLng; lines: LatLng[][] } | null>(null);
+  const [usage, setUsage] = useState(0); // kWh per month, 0 = not entered
+  const [showHeat, setShowHeat] = useState(false);
   const drawingRef = useRef(false);
 
   const [points, setPoints] = useState<LatLng[]>([]);
@@ -120,15 +129,16 @@ export default function App() {
     }).addTo(map);
     const streets = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 21, maxNativeZoom: 19, attribution: '© OpenStreetMap contributors' });
     const canvas = L.canvas({ padding: 0.3 });
+    const heat = L.layerGroup().addTo(map);
     const grid = L.layerGroup().addTo(map);
     const panels = L.layerGroup().addTo(map);
     const plot = L.layerGroup().addTo(map);
     const handles = L.layerGroup().addTo(map);
-    L.control.layers({ Satellite: sat, Streets: streets }, { Labels: labels, 'Power lines': grid, Panels: panels }, { position: 'topright' }).addTo(map);
+    L.control.layers({ Satellite: sat, Streets: streets }, { Labels: labels, 'Power lines': grid, Panels: panels, 'Grid-profit heat map': heat }, { position: 'topright' }).addTo(map);
     map.on('click', (e: L.LeafletMouseEvent) => {
       if (drawingRef.current) setPoints((p) => [...p, [e.latlng.lat, e.latlng.lng]]);
     });
-    layers.current = { plot, handles, panels, grid, canvas };
+    layers.current = { plot, handles, panels, grid, heat, canvas };
     mapRef.current = map;
   }, []);
 
@@ -229,7 +239,7 @@ export default function App() {
   useEffect(() => {
     const ly = layers.current;
     if (!ly) return;
-    if (!closed || badShape) { setGrid(null); ly.grid.clearLayers(); return; }
+    if (!closed || badShape) { gridGeo.current = null; setGrid(null); ly.grid.clearLayers(); return; }
     const c = centroid(points);
     setGridStatus('loading');
     const ctl = new AbortController();
@@ -273,6 +283,7 @@ export default function App() {
           for (const s of subs) {
             L.circleMarker(s.pos, { radius: 7, color: '#fff', weight: 2, fillColor: '#ef4444', fillOpacity: 1 }).bindTooltip(s.name).addTo(ly.grid);
           }
+          gridGeo.current = { c, lines: lines.map((l) => l.coords) };
           setGrid({
             nearestLineMi: isFinite(nearestLineM) ? nearestLineM / M_PER_MILE : null, nearestLineKv,
             nearestSubMi: isFinite(nearestSubM) ? nearestSubM / M_PER_MILE : null, nearestSubName, lineCount: lines.length,
@@ -339,18 +350,106 @@ export default function App() {
   // ---------- finance ----------
   const annualKwh = prod.status === 'done' ? prod.annual : 0;
   const ready = closed && kw > 0 && annualKwh > 0;
+
+  // How much of the solar output the owner uses themselves vs. sells back, from their monthly use.
+  const usageCalc = useMemo(() => {
+    if (prod.status !== 'done' || usage <= 0 || prod.annual <= 0) return null;
+    const battKwh = kw * fin.batteryHours;
+    let direct = 0, withBatt = 0, covered = 0;
+    prod.monthly.forEach((p, i) => {
+      const d = Math.min(p, usage * DAYTIME_USE); // used the moment it's produced
+      const shiftable = Math.min(p, usage) - d; // could be used later in the day with storage
+      const shifted = Math.min(shiftable, battKwh * DAYS[i]) * BATTERY_EFF;
+      direct += d;
+      withBatt += d + shifted;
+      covered += Math.min(p, usage);
+    });
+    return {
+      selfShare: direct / prod.annual,
+      battShare: withBatt / prod.annual,
+      coverPct: covered / (usage * 12),
+      exportKwh: prod.annual - direct,
+      exportKwhBatt: prod.annual - withBatt / BATTERY_EFF,
+    };
+  }, [prod, usage, kw, fin.batteryHours]);
   const results = useMemo(() => {
     if (!ready) return null;
     const make = (m: Mode): FinInputs => ({
       mode: m, kw, annualKwh, acres,
-      costPerW: fin.costPerW, ppaRate: fin.ppaRate, retailRate: fin.retailRate, exportRate: fin.exportRate, selfUseShare: fin.selfUseShare,
-      batteryKwh: kw * fin.batteryHours, batteryCostPerKwh: fin.batteryCostPerKwh, batterySelfUseShare: fin.batterySelfUseShare,
+      costPerW: fin.costPerW, ppaRate: fin.ppaRate, retailRate: fin.retailRate, exportRate: fin.exportRate,
+      selfUseShare: usageCalc ? usageCalc.selfShare : fin.selfUseShare,
+      batteryKwh: kw * fin.batteryHours, batteryCostPerKwh: fin.batteryCostPerKwh,
+      batterySelfUseShare: usageCalc ? usageCalc.battShare : fin.batterySelfUseShare,
       incentivePct: fin.incentivePct / 100, omPerKwYr: fin.omPerKwYr, escalation: fin.escalation, discount: fin.discount, degradation: fin.degradation,
       leaseRatePerAcre: fin.leaseRatePerAcre, gridDistanceMi: grid?.nearestLineMi ?? null, lineCostPerMile: fin.lineCostPerMile,
       interconnectFixed: 10_000 + kw * fin.interconnectPerKw,
     });
     return Object.fromEntries(MODES.map((m) => [m.id, runFinance(make(m.id))])) as Record<Mode, FinResult>;
-  }, [ready, kw, annualKwh, acres, fin, grid]);
+  }, [ready, kw, annualKwh, acres, fin, grid, usageCalc]);
+
+  // Grid-sale profit across the surrounding area. Same system and sunlight as the plot;
+  // what changes cell to cell is the distance to the nearest mapped power line.
+  const heat = useMemo(() => {
+    if (!showHeat || !results || !grid || !gridGeo.current) return null;
+    const { c, lines } = gridGeo.current;
+    const npv0 = results.grid.npv + (grid.nearestLineMi ?? 0) * fin.lineCostPerMile; // NPV right next to a line
+    const breakEvenMi = npv0 <= 0 ? 0 : fin.lineCostPerMile > 0 ? npv0 / fin.lineCostPerMile : Infinity;
+    const segs = lines.map((l) => l.map((p) => toLocal(c, p)));
+    const step = (2 * HEAT_HALF_M) / HEAT_N;
+    const cells: { b: [LatLng, LatLng]; npv: number; mi: number }[] = [];
+    for (let iy = 0; iy < HEAT_N; iy++) {
+      for (let ix = 0; ix < HEAT_N; ix++) {
+        const x = -HEAT_HALF_M + (ix + 0.5) * step;
+        const y = -HEAT_HALF_M + (iy + 0.5) * step;
+        let best = Infinity;
+        for (const s of segs) {
+          for (let k = 0; k < s.length - 1; k++) {
+            const [ax, ay] = s[k], [bx, by] = s[k + 1];
+            const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+            const t = len2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2)) : 0;
+            const d = Math.hypot(ax + t * dx - x, ay + t * dy - y);
+            if (d < best) best = d;
+          }
+        }
+        const mi = best / M_PER_MILE;
+        cells.push({
+          b: [toLatLng(c, [x - step / 2, y - step / 2]), toLatLng(c, [x + step / 2, y + step / 2])],
+          npv: npv0 - mi * fin.lineCostPerMile,
+          mi,
+        });
+      }
+    }
+    const finite = cells.filter((x) => isFinite(x.npv)).map((x) => Math.abs(x.npv));
+    const maxAbs = Math.max(1, ...finite);
+    const profitableShare = cells.filter((x) => x.npv > 0).length / cells.length;
+    return { cells, npv0, breakEvenMi, maxAbs, profitableShare, noLines: lines.length === 0 };
+  }, [showHeat, results, grid, fin.lineCostPerMile]);
+
+  useEffect(() => {
+    const ly = layers.current;
+    if (!ly) return;
+    ly.heat.clearLayers();
+    if (!heat) return;
+    for (const cell of heat.cells) {
+      const t = isFinite(cell.npv) ? Math.max(-1, Math.min(1, cell.npv / heat.maxAbs)) : -1;
+      L.rectangle(cell.b, {
+        renderer: ly.canvas, stroke: false, interactive: false,
+        fillColor: t >= 0 ? '#22c55e' : '#ef4444', fillOpacity: 0.14 + 0.42 * Math.abs(t),
+      }).addTo(ly.heat);
+    }
+  }, [heat]);
+
+  function toggleHeat() {
+    const next = !showHeat;
+    setShowHeat(next);
+    const map = mapRef.current;
+    if (next && map && center) {
+      const lo = toLatLng(center, [-HEAT_HALF_M, -HEAT_HALF_M]);
+      const hi = toLatLng(center, [HEAT_HALF_M, HEAT_HALF_M]);
+      map.flyToBounds([lo, hi], { duration: 0.8 });
+      if (layers.current && !map.hasLayer(layers.current.heat)) layers.current.heat.addTo(map);
+    }
+  }
   const res = results?.[mode];
   const best = results
     ? (Object.entries(results) as [Mode, FinResult][]).filter(([m]) => siteType === 'ground' || m !== 'lease').sort((a, b) => b[1].npv - a[1].npv)[0][0]
@@ -381,6 +480,19 @@ export default function App() {
           )}
           {closed && <span className="hint subtle">Drag corners to adjust · drag small dots to add corners · double-click a corner to delete</span>}
         </div>
+        {heat && (
+          <div className="legend">
+            <b>Where selling to the grid pays</b>
+            <div className="legend-scale"><span className="neg">Loses money</span><i /><span className="pos">Profitable</span></div>
+            {heat.noLines
+              ? <p>No power lines are mapped within ~4 mi, so grid sale here needs a long new line.</p>
+              : heat.breakEvenMi <= 0
+                ? <p>With these prices, selling to the grid loses money even right next to a power line. Try a higher sale price or lower cost.</p>
+                : <p>This {kw >= 1000 ? `${(kw / 1000).toFixed(1)} MW` : `${Math.round(kw)} kW`} system pays off within <b>{heat.breakEvenMi === Infinity ? 'any distance' : fmtDist(heat.breakEvenMi)}</b> of a power line ({Math.round(heat.profitableShare * 100)}% of this area).</p>}
+            <p className="muted">Same system and sunlight as your plot; only the distance to the nearest mapped line changes. Ignores line capacity and land use.</p>
+            <button className="link" onClick={toggleHeat}>Hide heat map</button>
+          </div>
+        )}
       </section>
 
       <aside className="panel">
@@ -464,6 +576,14 @@ export default function App() {
 
             <div className="card">
               <h2>3 · Energy</h2>
+              <div className="usage">
+                <Field label="Your electricity use (from your power bill)" value={usage} onChange={setUsage} step={100} min={0} max={50_000_000} suffix="kWh / month" />
+                {usageCalc ? (
+                  <p>Solar covers <b>{Math.round(Math.min(1, usageCalc.coverPct) * 100)}%</b> of your yearly use. You'd use <b>{Math.round(usageCalc.selfShare * 100)}%</b> of the output yourself and sell back <b>{Math.round(usageCalc.exportKwh).toLocaleString()} kWh/yr</b> ({Math.round(usageCalc.battShare * 100)}% used yourself with batteries).</p>
+                ) : (
+                  <p className="muted small">Enter your monthly use to see how much solar you'd use yourself and how much you'd sell back to the grid. Leave at 0 to use the default shares.</p>
+                )}
+              </div>
               {prod.status === 'loading' && <p className="muted">Running NREL's PVWatts solar model for this exact location…</p>}
               {prod.status === 'error' && <p className="warn">Solar model unavailable ({prod.msg}). Try again in a minute.</p>}
               {prod.status === 'idle' && <p className="muted">Place some panels to estimate output.</p>}
@@ -474,9 +594,19 @@ export default function App() {
                     <div><b>{(prod.annual / HOUSEHOLD_KWH).toLocaleString(undefined, { maximumFractionDigits: prod.annual < HOUSEHOLD_KWH * 10 ? 1 : 0 })}</b><span>homes' worth of power</span></div>
                     <div><b>{((prod.annual / 1000) * CO2_T_PER_MWH).toLocaleString(undefined, { maximumFractionDigits: 0 })} t</b><span>CO₂ avoided / yr</span></div>
                   </div>
-                  <div className="months">{prod.monthly.map((v, i) => (
-                    <div key={i} title={`${Math.round(v).toLocaleString()} kWh`}><i style={{ height: `${(v / Math.max(...prod.monthly)) * 100}%` }} /><span>{'JFMAMJJASOND'[i]}</span></div>
-                  ))}</div>
+                  <div className="months">{prod.monthly.map((v, i) => {
+                    const top = Math.max(...prod.monthly, usage);
+                    return (
+                      <div key={i} title={`Solar ${Math.round(v).toLocaleString()} kWh${usage ? ` · use ${usage.toLocaleString()} kWh` : ''}`}>
+                        <div className="mbars">
+                          <i style={{ height: `${(v / top) * 100}%` }} />
+                          {usage > 0 && <i className="use" style={{ height: `${(usage / top) * 100}%` }} />}
+                        </div>
+                        <span>{'JFMAMJJASOND'[i]}</span>
+                      </div>
+                    );
+                  })}</div>
+                  {usage > 0 && <p className="muted small"><span className="key sun" /> solar output <span className="key use" /> your use</p>}
                   <p className="muted small">NREL PVWatts v8{prod.station ? `, weather station: ${prod.station}` : ''}. South-facing, {tilt}° tilt, 14% system losses.</p>
                 </>
               )}
@@ -492,6 +622,9 @@ export default function App() {
                   {grid.nearestSubMi !== null && grid.nearestSubName !== 'Substation' && <> ({grid.nearestSubName})</>}
                   <span className="muted small"> · orange lines on the map, from OpenStreetMap (may be incomplete)</span></p>
               )}
+              <button className="heat-btn" onClick={toggleHeat} disabled={!results || !grid}>
+                {showHeat ? 'Hide grid-profit heat map' : 'Show where selling to the grid is profitable'}
+              </button>
               <div className="modes">
                 {MODES.filter((m) => siteType === 'ground' || m.id !== 'lease').map((m) => (
                   <button key={m.id} className={`mode ${mode === m.id ? 'on' : ''}`} onClick={() => setMode(m.id)}>
