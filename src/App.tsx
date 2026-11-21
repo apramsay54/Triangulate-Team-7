@@ -632,7 +632,7 @@ export default function App() {
                 <p>Nearest power line: <b>{grid.nearestLineMi === null ? 'none within ~4 mi' : fmtDist(grid.nearestLineMi)}</b>
                   {fmtKv(grid.nearestLineKv) && ` (${fmtKv(grid.nearestLineKv)})`} · Nearest substation: <b>{grid.nearestSubMi === null ? 'none within ~12 mi' : `${grid.nearestSubMi.toFixed(1)} mi`}</b>
                   {grid.nearestSubMi !== null && grid.nearestSubName !== 'Substation' && <> ({grid.nearestSubName})</>}
-                  <span className="muted small"> · orange lines on the map, from OpenStreetMap (may be incomplete)</span></p>
+                  <span className="muted small"> · orange lines on the map, from HIFLD + OpenStreetMap (may be incomplete)</span></p>
               )}
               <button className="heat-btn" onClick={toggleHeat} disabled={!results || !grid}>
                 {showHeat ? 'Hide grid-profit heat map' : 'Show where selling to the grid is profitable'}
@@ -692,7 +692,7 @@ export default function App() {
         )}
 
         <footer className="foot">
-          Planning estimates only, not an engineering design or financial advice. Data: Esri World Imagery, NREL PVWatts, OpenStreetMap.
+          Planning estimates only, not an engineering design or financial advice. Data: Esri World Imagery, NREL PVWatts, HIFLD transmission lines, OpenStreetMap.
         </footer>
       </aside>
     </div>
