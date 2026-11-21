@@ -48,11 +48,6 @@ type AiState = { status: 'idle' | 'loading' | 'off' | 'error'; msg?: string } | 
 type ProdVal = { annual: number; monthly: number[]; station: string | null };
 type Prod = { status: 'idle' | 'loading' } | ({ status: 'done' } & ProdVal) | { status: 'error'; msg: string };
 
-const OVERPASS = [
-  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
-];
 const MODES: { id: Mode; title: string; blurb: string }[] = [
   { id: 'grid', title: 'Sell to the grid', blurb: 'Connect to the nearest power line and sell every kWh to the utility.' },
   { id: 'onsite', title: 'Use it on site', blurb: 'Power your own buildings; surplus is credited at the export rate.' },
@@ -248,10 +243,11 @@ export default function App() {
     setGridStatus('loading');
     const ctl = new AbortController();
     const t = setTimeout(async () => {
-      const q = `[out:json][timeout:25];(way["power"~"^(line|minor_line)$"](around:6000,${c[0]},${c[1]});node["power"="substation"](around:20000,${c[0]},${c[1]});way["power"="substation"](around:20000,${c[0]},${c[1]}););out geom qt 600;`;
-      for (const ep of OVERPASS) {
+      // rounded to ~100 m so nearby plots share the server's cached answer
+      const sources = [`/api/grid?lat=${c[0].toFixed(3)}&lon=${c[1].toFixed(3)}`];
+      for (const ep of sources) {
         try {
-          const r = await fetch(ep, { method: 'POST', body: new URLSearchParams({ data: q }), signal: AbortSignal.any([ctl.signal, AbortSignal.timeout(9000)]) });
+          const r = await fetch(ep, { signal: AbortSignal.any([ctl.signal, AbortSignal.timeout(40000)]) });
           if (!r.ok) continue;
           const j = await r.json();
           type El = { type: string; tags?: Record<string, string>; lat?: number; lon?: number; geometry?: { lat: number; lon: number }[] };
