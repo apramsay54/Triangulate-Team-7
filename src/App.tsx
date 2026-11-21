@@ -49,10 +49,10 @@ type ProdVal = { annual: number; monthly: number[]; station: string | null };
 type Prod = { status: 'idle' | 'loading' } | ({ status: 'done' } & ProdVal) | { status: 'error'; msg: string };
 
 const MODES: { id: Mode; title: string; blurb: string }[] = [
-  { id: 'grid', title: 'Sell to the grid', blurb: 'Connect to the nearest power line and sell every kWh to the utility.' },
+  { id: 'grid', title: 'Sell to the grid', blurb: 'Connect to the nearest power line and sell every kWh to Duke Energy as a small power producer.' },
   { id: 'onsite', title: 'Use it on site', blurb: 'Power your own buildings; surplus is credited at the export rate.' },
   { id: 'battery', title: 'Store it yourself', blurb: 'Add batteries and use most of it yourself; no new power line.' },
-  { id: 'lease', title: 'Lease to a developer', blurb: 'A solar company builds and runs it and pays you rent per acre.' },
+  { id: 'lease', title: 'Lease to an investor', blurb: '$0 upfront. An investor funds and owns the panels and pays you rent. NC-legal: a lease, not a power sale.' },
 ];
 
 function clampNum(v: string, min: number, max: number, fallback: number) {
@@ -93,6 +93,8 @@ export default function App() {
   const drawingRef = useRef(false);
 
   const [points, setPoints] = useState<LatLng[]>([]);
+  const [view, setView] = useState<'landing' | 'app'>('landing');
+  const [scenarioNote, setScenarioNote] = useState('');
   const [drawing, setDrawing] = useState(false);
   const [siteType, setSiteType] = useState<SiteType>('ground');
   const [coverage, setCoverage] = useState(85); // leaves room for access lanes, inverters and fencing
@@ -345,7 +347,30 @@ export default function App() {
     setFin((f) => ({ ...f, costPerW: d.costPerW, omPerKwYr: d.om }));
     if (s === 'roof' && mode === 'lease') setMode('onsite');
   }
-  function startDraw() { setPoints([]); setDrawing(true); setAi({ status: 'idle' }); }
+  function startDraw() { setPoints([]); setDrawing(true); setAi({ status: 'idle' }); setScenarioNote(''); }
+
+  function showApp(after?: (map: L.Map) => void) {
+    setView('app');
+    window.scrollTo(0, 0);
+    setTimeout(() => {
+      const map = mapRef.current;
+      if (!map) return;
+      map.invalidateSize();
+      after?.(map);
+    }, 60);
+  }
+  function startScenario(s: Scenario) {
+    changeSite(s.site);
+    setDrawing(false);
+    setAi({ status: 'idle' });
+    const rect: LatLng[] = [
+      toLatLng(s.center, [-s.w / 2, -s.h / 2]), toLatLng(s.center, [s.w / 2, -s.h / 2]),
+      toLatLng(s.center, [s.w / 2, s.h / 2]), toLatLng(s.center, [-s.w / 2, s.h / 2]),
+    ];
+    setPoints(rect);
+    setScenarioNote(`Example outline near ${s.place}. Drag the corners onto the actual ${s.site === 'ground' ? 'field' : 'roof'}, or search your own address.`);
+    showApp((map) => map.setView(s.center, s.zoom));
+  }
   function finishDraw() { if (points.length >= 3) { setDrawing(false); setAi({ status: 'idle' }); } }
 
   // ---------- finance ----------
@@ -477,7 +502,9 @@ export default function App() {
   const gearth = `https://earth.google.com/web/@${gc[0]},${gc[1]},120a,700d,35y,0h,45t,0r`;
 
   return (
-    <div className="app">
+    <>
+    {view === 'landing' && <Landing onScenario={startScenario} onStart={() => showApp()} />}
+    <div className={`app ${view === 'landing' ? 'hidden' : ''}`}>
       <section className="map-wrap">
         <div ref={mapEl} className="map" />
         <form className="search" onSubmit={search}>
@@ -525,12 +552,10 @@ export default function App() {
 
       <aside className="panel">
         <header className="brand">
-          <div className="logo" aria-hidden>☀</div>
-          <div>
-            <h1>SunPlot</h1>
-            <p>Outline any field or roof. See how many panels fit, what they'd earn, and the best way to use the power.</p>
-          </div>
+          <button className="wordmark" onClick={() => setView('landing')} title="Back to home"><span className="sunmark" />SunPlot</button>
+          <p>Trace a field or roof. See the panels, the power, and the deal.</p>
         </header>
+        {scenarioNote && closed && <p className="note">{scenarioNote}</p>}
 
         {!closed && (
           <div className="card empty">
@@ -712,9 +737,114 @@ export default function App() {
         )}
 
         <footer className="foot">
-          Planning estimates only, not an engineering design or financial advice. Data: Esri World Imagery, NREL PVWatts, HIFLD transmission lines, OpenStreetMap.
+          Illustrative estimates only. Not engineering, legal, or financial advice. Satellite: Esri. Production: NREL. Power lines: HIFLD / OpenStreetMap. AI: Claude.
         </footer>
       </aside>
+    </div>
+    </>
+  );
+}
+
+type Scenario = { id: string; title: string; blurb: string; place: string; center: LatLng; w: number; h: number; site: SiteType; zoom: number };
+const SCENARIOS: Scenario[] = [
+  { id: 'farm', title: 'Farm near Zebulon', blurb: '~15-acre field, ground-mount', place: 'Zebulon, NC', center: [35.8452, -78.3086], w: 320, h: 200, site: 'ground', zoom: 16 },
+  { id: 'home', title: 'Home in Apex', blurb: 'Single-family roof', place: 'Apex, NC', center: [35.7327, -78.8503], w: 16, h: 11, site: 'roof', zoom: 20 },
+  { id: 'bigbox', title: 'Big-box roof in Raleigh', blurb: 'Commercial flat roof', place: 'Raleigh, NC', center: [35.8655, -78.5765], w: 120, h: 85, site: 'roof', zoom: 18 },
+];
+
+function Landing({ onScenario, onStart }: { onScenario: (s: Scenario) => void; onStart: () => void }) {
+  // Illustrative card: 15 acres at the app's default $900/acre/yr lease with a 2%/yr escalator
+  const acres = 15, rate = 900;
+  const yr1 = acres * rate;
+  const total = yr1 * ((Math.pow(1.02, YEARS) - 1) / 0.02);
+  return (
+    <div className="landing">
+      <header className="topbar">
+        <span className="wordmark"><span className="sunmark" />SunPlot</span>
+        <nav>
+          <a href="#how">How it works</a>
+          <a href="#who">Owners &amp; investors</a>
+          <button className="btn dark" onClick={onStart}>Open the map</button>
+        </nav>
+      </header>
+
+      <section className="hero">
+        <div>
+          <p className="eyebrow">Make solar energy economical · Wake County, NC</p>
+          <h1>Your land has a <em>second harvest.</em></h1>
+          <p className="sub">Trace your field or roof on a satellite map. SunPlot shows how many panels fit, what they'd produce and earn, and how an investor-funded lease can put solar on it for <b>$0 upfront</b>.</p>
+          <div className="scenarios">
+            {SCENARIOS.map((s) => (
+              <button key={s.id} className="scenario" onClick={() => onScenario(s)}>
+                <b>{s.title} →</b>
+                <span>{s.blurb}</span>
+              </button>
+            ))}
+          </div>
+          <p className="hero-own">Or <button onClick={onStart}>draw your own site</button>.</p>
+        </div>
+        <aside className="hero-card">
+          <h3>Example: a 15-acre field</h3>
+          <p className="muted">Illustrative, at a ${rate}/acre/yr land lease with a 2% yearly increase.</p>
+          <div className="hc-row"><span>Owner pays upfront</span><b className="green">$0</b></div>
+          <div className="hc-row"><span>Lease income, year 1</span><b className="amber">${yr1.toLocaleString()}</b></div>
+          <div className="hc-row"><span>Lease income over {YEARS} years</span><b>${Math.round(total / 1000).toLocaleString()}k</b></div>
+          <div className="hc-bar">
+            <i style={{ width: '55%', background: 'var(--sun)' }} />
+            <i style={{ width: '15%', background: 'var(--green)' }} />
+            <i style={{ width: '30%', background: 'var(--line-2)' }} />
+          </div>
+          <div className="hc-legend">
+            <span style={{ ['--c' as string]: 'var(--sun)' }}>Panels</span>
+            <span style={{ ['--c' as string]: 'var(--green)' }}>Setbacks</span>
+            <span style={{ ['--c' as string]: 'var(--line-2)' }}>Access &amp; unusable</span>
+          </div>
+        </aside>
+      </section>
+
+      <section className="band" id="how">
+        <div className="band-inner">
+          <h2>From satellite photo to signed lease</h2>
+          <p className="lede">Every number comes from your own outline and public data: Esri satellite imagery, the national lab's solar model (NREL PVWatts) and federal power-line maps.</p>
+          <div className="steps">
+            <div className="step"><div className="num">1</div><h4>Trace your site</h4><p>Click the corners of a field or roof on current satellite imagery, then drag to fine-tune. Panels are laid out in real rows with setbacks.</p></div>
+            <div className="step"><div className="num">2</div><h4>AI checks the land</h4><p>Claude reads the satellite image for trees, buildings, water and roof equipment, and says how confident it is. You decide whether to apply its estimate.</p></div>
+            <div className="step"><div className="num">3</div><h4>Compare the deals</h4><p>Sell to the grid, use it yourself, add batteries, or lease to an investor. See payback, 25-year value and a grid-profit heat map.</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section className="band" id="who">
+        <div className="band-inner two">
+          <div className="who">
+            <h4>For owners</h4>
+            <ul>
+              <li>Farms, homes, churches and businesses in Wake County</li>
+              <li>See your site's real panel capacity in minutes</li>
+              <li>Know what a fair lease looks like before a developer calls</li>
+              <li>$0 upfront with an investor-funded lease</li>
+            </ul>
+          </div>
+          <div className="who green">
+            <h4>For investors</h4>
+            <ul>
+              <li>Screen sites by size, production and grid distance</li>
+              <li>Payback, NPV and cost per kWh with editable assumptions</li>
+              <li>Leases keep deals NC-legal: in North Carolina only the utility may sell retail power</li>
+              <li>Coming next: a board of listed sites to browse and inquire</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section className="band cta-band">
+        <div className="band-inner">
+          <h2>See what your land could grow.</h2>
+          <button className="btn amber" onClick={onStart}>Open the map →</button>
+        </div>
+      </section>
+
+      <footer className="site-foot">Illustrative estimates only. Not engineering, legal, or financial advice. Satellite: Esri. Production: NREL. AI: Claude.</footer>
     </div>
   );
 }
