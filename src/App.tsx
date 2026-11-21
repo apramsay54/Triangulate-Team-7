@@ -133,7 +133,7 @@ export default function App() {
     const panels = L.layerGroup().addTo(map);
     const plot = L.layerGroup().addTo(map);
     const handles = L.layerGroup().addTo(map);
-    L.control.layers({ Satellite: sat, Streets: streets }, { Labels: labels, 'Power lines': grid, Panels: panels, 'Grid-profit heat map': heat }, { position: 'topright' }).addTo(map);
+    L.control.layers({ Satellite: sat, Streets: streets }, { Labels: labels, 'Power lines': grid, Panels: panels }, { position: 'topright' }).addTo(map);
     map.on('click', (e: L.LeafletMouseEvent) => {
       if (drawingRef.current) setPoints((p) => [...p, [e.latlng.lat, e.latlng.lng]]);
     });
@@ -426,12 +426,14 @@ export default function App() {
       A += (annualKwh * Math.pow(1 - fin.degradation, t - 1) * Math.pow(1 + fin.escalation, t - 1)) / Math.pow(1 + fin.discount, t);
     }
     const priceAt = (npv: number) => (A > 0 ? fin.ppaRate - npv / A : Infinity);
-    const prices = cells.map((x) => priceAt(x.npv)).filter(isFinite);
-    const spread = Math.max(0.005, ...prices.map((p) => Math.abs(p - fin.ppaRate)));
+    const prices = cells.map((x) => priceAt(x.npv)).filter(isFinite).sort((a, b) => a - b);
+    // colour scale for losing cells: from the cheapest break-even price (or today's price) up to the 95th percentile
+    const rampLo = Math.max(fin.ppaRate, prices[0] ?? fin.ppaRate);
+    const rampHi = Math.max(rampLo + 0.002, prices[Math.floor(prices.length * 0.95)] ?? rampLo);
     const profitableShare = cells.filter((x) => x.npv > 0).length / cells.length;
     return {
       cells: cells.map((x) => ({ ...x, price: priceAt(x.npv) })),
-      npv0, breakEvenMi, spread, profitableShare, noLines: lines.length === 0,
+      npv0, breakEvenMi, rampLo, rampHi, profitableShare, noLines: lines.length === 0,
       priceAtLine: priceAt(npv0), priceAt1Mi: priceAt(npv0 - fin.lineCostPerMile),
     };
   }, [showHeat, results, grid, fin.lineCostPerMile, fin.ppaRate, fin.degradation, fin.escalation, fin.discount, annualKwh]);
@@ -442,12 +444,16 @@ export default function App() {
     ly.heat.clearLayers();
     if (!heat) return;
     for (const cell of heat.cells) {
-      // positive t = break-even price below today's sale price (profitable)
-      const t = isFinite(cell.price) ? Math.max(-1, Math.min(1, (fin.ppaRate - cell.price) / heat.spread)) : -1;
-      L.rectangle(cell.b, {
-        renderer: ly.canvas, stroke: false, interactive: false,
-        fillColor: t >= 0 ? '#22c55e' : '#ef4444', fillOpacity: 0.1 + 0.5 * Math.abs(t),
-      }).addTo(ly.heat);
+      // green = profitable at today's sale price; otherwise yellow (almost there) → red (needs a much higher price)
+      let color = 'hsl(0, 85%, 48%)';
+      if (isFinite(cell.price)) {
+        if (cell.price <= fin.ppaRate) color = 'hsl(140, 75%, 42%)';
+        else {
+          const t = Math.min(1, (cell.price - heat.rampLo) / (heat.rampHi - heat.rampLo));
+          color = `hsl(${Math.round(52 * (1 - t))}, 90%, 50%)`;
+        }
+      }
+      L.rectangle(cell.b, { renderer: ly.canvas, stroke: false, interactive: false, fillColor: color, fillOpacity: 0.5 }).addTo(ly.heat);
     }
   }, [heat, fin.ppaRate]);
 
@@ -495,7 +501,17 @@ export default function App() {
         {heat && (
           <div className="legend">
             <b>Where selling to the grid pays</b>
-            <div className="legend-scale"><span className="neg">Loses money</span><i /><span className="pos">Profitable</span></div>
+            <div className="legend-scale">
+              <span className="pos">Profitable</span>
+              <i />
+              <span className="neg">Needs a higher price</span>
+            </div>
+            <div className="legend-ticks">
+              <span>≤ {(fin.ppaRate * 100).toFixed(1)}¢</span>
+              <span>{(heat.rampLo * 100).toFixed(1)}¢</span>
+              <span>{(heat.rampHi * 100).toFixed(1)}¢+</span>
+            </div>
+            <p className="muted" style={{ marginTop: 2 }}>Colour = sale price per kWh needed to break even over {YEARS} years.</p>
             {heat.noLines
               ? <p>No power lines are mapped within ~4 mi, so grid sale here needs a long new line.</p>
               : heat.breakEvenMi <= 0
