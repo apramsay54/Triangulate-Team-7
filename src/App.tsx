@@ -10,6 +10,7 @@ const DAYTIME_USE = 0.4; // share of a typical site's use that happens while pan
 const BATTERY_EFF = 0.9; // round-trip efficiency for energy shifted through the battery
 const HEAT_HALF_M = 4000; // heat map covers 8 km x 8 km around the plot
 const HEAT_N = 32; // cells per side
+import InvestorBoard, { saveMyListing } from './Investors';
 import { type Mode, type FinInputs, type FinResult, runFinance, compact, YEARS } from './finance';
 
 const START: LatLng = [35.7847, -78.6821]; // NC State campus
@@ -93,7 +94,7 @@ export default function App() {
   const drawingRef = useRef(false);
 
   const [points, setPoints] = useState<LatLng[]>([]);
-  const [view, setView] = useState<'landing' | 'app'>('landing');
+  const [view, setView] = useState<'landing' | 'app' | 'investors'>('landing');
   const [scenarioNote, setScenarioNote] = useState('');
   const [drawing, setDrawing] = useState(false);
   const [siteType, setSiteType] = useState<SiteType>('ground');
@@ -503,8 +504,9 @@ export default function App() {
 
   return (
     <>
-    {view === 'landing' && <Landing onScenario={startScenario} onStart={() => showApp()} />}
-    <div className={`app ${view === 'landing' ? 'hidden' : ''}`}>
+    {view === 'landing' && <Landing onScenario={startScenario} onStart={() => showApp()} onInvestors={() => { setView('investors'); window.scrollTo(0, 0); }} />}
+    {view === 'investors' && <InvestorBoard onHome={() => setView('landing')} onMap={() => showApp()} />}
+    <div className={`app ${view !== 'app' ? 'hidden' : ''}`}>
       <section className="map-wrap">
         <div ref={mapEl} className="map" />
         <form className="search" onSubmit={search}>
@@ -572,7 +574,7 @@ export default function App() {
           <>
             <div className="card">
               <div className="card-head"><h2>1 · Plot & panels</h2>
-                <a className="link" href={gearth} target="_blank" rel="noreferrer">View in Google Earth ↗</a></div>
+                <span style={{ display: 'flex', gap: 12 }}><button className="link" disabled={!kw || !center} onClick={() => { if (!center) return; saveMyListing({ id: 'mine-' + center[0].toFixed(4) + center[1].toFixed(4), name: 'Your listed site', town: 'Wake County', type: siteType === 'ground' ? 'Farm field' : 'Commercial roof', acres, kw, mwhYr: annualKwh / 1000, gridMi: grid?.nearestLineMi ?? null, lease: Math.round(acres * fin.leaseRatePerAcre), status: 'Available', illustrative: false }); setView('investors'); window.scrollTo(0, 0); }}>List on investor board</button><a className="link" href={gearth} target="_blank" rel="noreferrer">Google Earth ↗</a></span></div>
               {badShape && <p className="warn">The outline crosses itself. Drag a corner so the edges don't cross.</p>}
               {layout.tooLarge && <p className="warn">That plot is over ~1,000 acres. Outline a smaller area.</p>}
               <div className="seg">
@@ -752,7 +754,7 @@ const SCENARIOS: Scenario[] = [
   { id: 'bigbox', title: 'Big-box roof in Raleigh', blurb: 'Commercial flat roof', place: 'Raleigh, NC', center: [35.8655, -78.5765], w: 120, h: 85, site: 'roof', zoom: 18 },
 ];
 
-function Landing({ onScenario, onStart }: { onScenario: (s: Scenario) => void; onStart: () => void }) {
+function Landing({ onScenario, onStart, onInvestors }: { onScenario: (s: Scenario) => void; onStart: () => void; onInvestors: () => void }) {
   // Illustrative card: 15 acres at the app's default $900/acre/yr lease with a 2%/yr escalator
   const acres = 15, rate = 900;
   const yr1 = acres * rate;
@@ -763,7 +765,7 @@ function Landing({ onScenario, onStart }: { onScenario: (s: Scenario) => void; o
         <span className="wordmark"><span className="sunmark" />SunPlot</span>
         <nav>
           <a href="#how">How it works</a>
-          <a href="#who">Owners &amp; investors</a>
+          <button className="link" onClick={onInvestors}>Investor board</button>
           <button className="btn dark" onClick={onStart}>Open the map</button>
         </nav>
       </header>
@@ -831,7 +833,7 @@ function Landing({ onScenario, onStart }: { onScenario: (s: Scenario) => void; o
               <li>Screen sites by size, production and grid distance</li>
               <li>Payback, NPV and cost per kWh with editable assumptions</li>
               <li>Leases keep deals NC-legal: in North Carolina only the utility may sell retail power</li>
-              <li>Coming next: a board of listed sites to browse and inquire</li>
+              <li><button className="link" onClick={onInvestors}>Browse the investor board →</button></li>
             </ul>
           </div>
         </div>
