@@ -419,11 +419,21 @@ export default function App() {
         });
       }
     }
-    const finite = cells.filter((x) => isFinite(x.npv)).map((x) => Math.abs(x.npv));
-    const maxAbs = Math.max(1, ...finite);
+    // NPV is linear in the sale price: NPV(p) = A·p − costs, so the break-even price at each cell is p0 − NPV/A.
+    let A = 0;
+    for (let t = 1; t <= YEARS; t++) {
+      A += (annualKwh * Math.pow(1 - fin.degradation, t - 1) * Math.pow(1 + fin.escalation, t - 1)) / Math.pow(1 + fin.discount, t);
+    }
+    const priceAt = (npv: number) => (A > 0 ? fin.ppaRate - npv / A : Infinity);
+    const prices = cells.map((x) => priceAt(x.npv)).filter(isFinite);
+    const spread = Math.max(0.005, ...prices.map((p) => Math.abs(p - fin.ppaRate)));
     const profitableShare = cells.filter((x) => x.npv > 0).length / cells.length;
-    return { cells, npv0, breakEvenMi, maxAbs, profitableShare, noLines: lines.length === 0 };
-  }, [showHeat, results, grid, fin.lineCostPerMile]);
+    return {
+      cells: cells.map((x) => ({ ...x, price: priceAt(x.npv) })),
+      npv0, breakEvenMi, spread, profitableShare, noLines: lines.length === 0,
+      priceAtLine: priceAt(npv0), priceAt1Mi: priceAt(npv0 - fin.lineCostPerMile),
+    };
+  }, [showHeat, results, grid, fin.lineCostPerMile, fin.ppaRate, fin.degradation, fin.escalation, fin.discount, annualKwh]);
 
   useEffect(() => {
     const ly = layers.current;
@@ -431,13 +441,14 @@ export default function App() {
     ly.heat.clearLayers();
     if (!heat) return;
     for (const cell of heat.cells) {
-      const t = isFinite(cell.npv) ? Math.max(-1, Math.min(1, cell.npv / heat.maxAbs)) : -1;
+      // positive t = break-even price below today's sale price (profitable)
+      const t = isFinite(cell.price) ? Math.max(-1, Math.min(1, (fin.ppaRate - cell.price) / heat.spread)) : -1;
       L.rectangle(cell.b, {
         renderer: ly.canvas, stroke: false, interactive: false,
-        fillColor: t >= 0 ? '#22c55e' : '#ef4444', fillOpacity: 0.14 + 0.42 * Math.abs(t),
+        fillColor: t >= 0 ? '#22c55e' : '#ef4444', fillOpacity: 0.1 + 0.5 * Math.abs(t),
       }).addTo(ly.heat);
     }
-  }, [heat]);
+  }, [heat, fin.ppaRate]);
 
   function toggleHeat() {
     const next = !showHeat;
@@ -487,9 +498,9 @@ export default function App() {
             {heat.noLines
               ? <p>No power lines are mapped within ~4 mi, so grid sale here needs a long new line.</p>
               : heat.breakEvenMi <= 0
-                ? <p>With these prices, selling to the grid loses money even right next to a power line. Try a higher sale price or lower cost.</p>
-                : <p>This {kw >= 1000 ? `${(kw / 1000).toFixed(1)} MW` : `${Math.round(kw)} kW`} system pays off within <b>{heat.breakEvenMi === Infinity ? 'any distance' : fmtDist(heat.breakEvenMi)}</b> of a power line ({Math.round(heat.profitableShare * 100)}% of this area).</p>}
-            <p className="muted">Same system and sunlight as your plot; only the distance to the nearest mapped line changes. Ignores line capacity and land use.</p>
+                ? <p>At {(fin.ppaRate * 100).toFixed(1)}¢/kWh this system loses money everywhere. It breaks even at <b>{(heat.priceAtLine * 100).toFixed(1)}¢</b> next to a power line, <b>{(heat.priceAt1Mi * 100).toFixed(1)}¢</b> 1 mi away.</p>
+                : <p>At {(fin.ppaRate * 100).toFixed(1)}¢/kWh this system pays off within <b>{heat.breakEvenMi === Infinity ? 'any distance' : fmtDist(heat.breakEvenMi)}</b> of a power line ({Math.round(heat.profitableShare * 100)}% of this area).</p>}
+            <p className="muted">Darker = further from break-even. Same system and sunlight as your plot; only the distance to the nearest mapped line changes. Ignores line capacity and land use.</p>
             <button className="link" onClick={toggleHeat}>Hide heat map</button>
           </div>
         )}
